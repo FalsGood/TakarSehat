@@ -1,0 +1,166 @@
+// ============================================================
+// prisma/schema.prisma
+// Schema database TakarSehat
+// Jalankan: npx prisma migrate dev --name init
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── User ─────────────────────────────────────────────────────────────────────
+// Tabel utama pengguna; menjadi foreign key pada sebagian besar tabel lain.
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+
+  // Relasi: satu user bisa punya banyak catatan di berbagai fitur
+  medications    Medication[]
+  medicationLogs MedicationLog[]
+  symptomLogs    SymptomLog[]
+  dailyHabitLogs DailyHabitLog[]
+
+  @@map("users")
+}
+
+// ─── Medication ───────────────────────────────────────────────────────────────
+// Daftar obat / suplemen yang didaftarkan oleh pengguna.
+model Medication {
+  id           String   @id @default(cuid())
+  userId       String
+  medicineName String
+  dosageNote   String   // Catatan dosis, misal "1 tablet setelah makan"
+  scheduleTime String   // Jadwal minum, misal "08:00, 20:00"
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  // Relasi ke User
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Relasi ke log konsumsi obat
+  medicationLogs MedicationLog[]
+
+  @@index([userId])
+  @@index([userId, isActive])
+  @@map("medications")
+}
+
+// ─── MedicationLog ────────────────────────────────────────────────────────────
+// Mencatat apakah pengguna sudah meminum obat sesuai jadwal.
+model MedicationLog {
+  id           String    @id @default(cuid())
+  medicationId String
+  userId       String
+  logDate      DateTime  @db.Date // Tanggal log (tanpa waktu)
+  status       String    // "taken" | "skipped" | "pending"
+  takenAt      DateTime? // Waktu aktual obat diminum (nullable jika belum/skip)
+
+  // Relasi ke Medication dan User
+  medication Medication @relation(fields: [medicationId], references: [id], onDelete: Cascade)
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, logDate])
+  @@unique([medicationId, userId, logDate])
+  @@map("medication_logs")
+}
+
+// ─── ConditionReference ───────────────────────────────────────────────────────
+// Referensi kondisi/penyakit untuk fitur "Cek Gejala".
+// Diisi via seed; bukan input pengguna langsung.
+model ConditionReference {
+  id               String  @id @default(cuid())
+  conditionName    String  @unique
+  commonSymptoms   String  // JSON array string atau teks dipisah koma
+  earlySigns       String  // Tanda-tanda awal yang sering diabaikan
+  commonCauses     String  // Penyebab / pemicu umum
+  redFlags         String  // Tanda bahaya → harus segera ke dokter
+  categoryTag      String  // "penyakit-kronis" | "infeksi" | "gangguan-metabolik" dll.
+
+  // Relasi ke log gejala pengguna
+  symptomLogs SymptomLog[]
+
+  @@map("condition_references")
+}
+
+// ─── SymptomLog ───────────────────────────────────────────────────────────────
+// Catatan gejala yang dilaporkan pengguna pada satu sesi.
+model SymptomLog {
+  id                 String    @id @default(cuid())
+  userId             String
+  selectedSymptoms   String    // JSON array gejala yang dipilih
+  severity           Int       // Skala 1–10
+  triggerNote        String?   // Catatan pemicu/konteks (opsional)
+  matchedConditionId String?   // Kondisi referensi yang paling cocok (nullable)
+  createdAt          DateTime  @default(now())
+
+  // Relasi ke User dan ConditionReference
+  user             User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  matchedCondition ConditionReference? @relation(fields: [matchedConditionId], references: [id])
+
+  @@index([userId])
+  @@index([userId, createdAt])
+  @@map("symptom_logs")
+}
+
+// ─── HabitGuide ───────────────────────────────────────────────────────────────
+// Panduan kebiasaan sehat (porsi makan, olahraga, tidur, dsb.).
+// Diisi via seed; bukan input pengguna langsung.
+model HabitGuide {
+  id               String @id @default(cuid())
+  title            String @unique
+  category         String // "nutrisi" | "olahraga" | "tidur" | "hidrasi" | "mindfulness"
+  targetSummary    String // Ringkasan target, misal "8 gelas air per hari"
+  guideDescription String @db.Text // Panduan lengkap
+
+  // Relasi ke log harian pengguna
+  dailyHabitLogs DailyHabitLog[]
+
+  @@index([category])
+  @@map("habit_guides")
+}
+
+// ─── DailyHabitLog ────────────────────────────────────────────────────────────
+// Catatan harian apakah pengguna berhasil menjalankan panduan kebiasaan.
+model DailyHabitLog {
+  id                 String   @id @default(cuid())
+  userId             String
+  habitGuideId       String
+  logDate            DateTime @db.Date // Tanggal log
+  isCompleted        Boolean  @default(false)
+  portionOrHabitNote String?  // Catatan porsi aktual atau detail kebiasaan (opsional)
+
+  // Relasi ke User dan HabitGuide
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  habitGuide HabitGuide @relation(fields: [habitGuideId], references: [id], onDelete: Cascade)
+
+  @@index([userId, logDate])
+  @@unique([habitGuideId, userId, logDate])
+  @@map("daily_habit_logs")
+}
+
+// ─── Article ──────────────────────────────────────────────────────────────────
+// Artikel kesehatan terpercaya (diisi via seed / CMS internal).
+model Article {
+  id           String   @id @default(cuid())
+  title        String
+  slug         String   @unique
+  category     String   // "nutrisi" | "penyakit" | "gaya-hidup" | "obat-obatan"
+  summary      String   // Ringkasan singkat (1–2 kalimat)
+  content      String   @db.Text // Isi artikel lengkap
+  sourceName   String   // Nama sumber rujukan, misal "Kemenkes RI"
+  sourceUrl    String   // URL sumber rujukan
+  readMinutes  Int      // Estimasi waktu baca (menit)
+  relatedTopic String   // Topik terkait (koma-separated atau JSON)
+  updatedAt    DateTime @updatedAt
+
+  @@index([category])
+  @@map("articles")
+}
